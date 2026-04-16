@@ -83,7 +83,7 @@ describe("onboard helpers", () => {
     });
   });
 
-  it("builds a sandbox sync script that only writes nemoclaw config", () => {
+  it("builds a sandbox sync script that writes nemoclaw config and bootstraps workspace files", () => {
     const script = buildSandboxConfigSyncScript({
       endpointType: "custom",
       endpointUrl: "https://inference.local/v1",
@@ -97,6 +97,9 @@ describe("onboard helpers", () => {
     assert.match(script, /cat > ~\/\.nemoclaw\/config\.json/);
     assert.match(script, /"model": "nemotron-3-nano:30b"/);
     assert.match(script, /"credentialEnv": "OPENAI_API_KEY"/);
+    assert.match(script, /OPENCLAW_AGENT_SCOPE_MODULE=/);
+    assert.match(script, /ensureAgentWorkspace/);
+    assert.match(script, /Workspace bootstrapped:/);
     assert.doesNotMatch(script, /cat > ~\/\.openclaw\/openclaw\.json/);
     assert.doesNotMatch(script, /openclaw models set/);
     assert.match(script, /^exit$/m);

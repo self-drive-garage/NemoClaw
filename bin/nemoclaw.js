@@ -67,6 +67,8 @@ const GLOBAL_COMMANDS = new Set([
   "onboard",
   "list",
   "deploy",
+  "slack-action-items",
+  "startup",
   "setup",
   "setup-spark",
   "start",
@@ -842,6 +844,26 @@ async function deploy(instanceName) {
   });
 }
 
+async function slackActionItems(args) {
+  const { runSlackActionItemsCommand } = require("./lib/slack-action-items");
+  try {
+    await runSlackActionItemsCommand(args);
+  } catch (err) {
+    console.error(`  ${err && err.message ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
+async function startup(args) {
+  const { runStartupCommand } = require("./lib/startup");
+  try {
+    await runStartupCommand(args);
+  } catch (err) {
+    console.error(`  ${err && err.message ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 async function start() {
   const { startAll } = require("./lib/services");
   await runStartCommand({
@@ -1292,6 +1314,9 @@ function help() {
     nemoclaw <name> logs ${D}[--follow]${R}  Stream sandbox logs
     nemoclaw <name> destroy          Stop NIM + delete sandbox ${D}(--yes to skip prompt)${R}
 
+  ${G}Integrations:${R}
+    nemoclaw slack-action-items ${D}[opts]${R}  Search recent Slack mentions and sync LLM-extracted items into MEMORY.md
+
   ${G}Policy Presets:${R}
     nemoclaw <name> policy-add       Add a network or filesystem policy preset ${D}(--dry-run to preview)${R}
     nemoclaw <name> policy-list      List presets ${D}(● = applied)${R}
@@ -1305,6 +1330,7 @@ function help() {
     nemoclaw start                   Start auxiliary services ${D}(Telegram, tunnel)${R}
     nemoclaw stop                    Stop all services
     nemoclaw status                  Show sandbox list and service status
+    nemoclaw startup enable          Install startup recovery for boot/login
 
   Troubleshooting:
     nemoclaw debug [--quick]         Collect diagnostics for bug reports
@@ -1354,6 +1380,12 @@ const [cmd, ...args] = process.argv.slice(2);
         break;
       case "deploy":
         await deploy(args[0]);
+        break;
+      case "slack-action-items":
+        await slackActionItems(args);
+        break;
+      case "startup":
+        await startup(args);
         break;
       case "start":
         await start();

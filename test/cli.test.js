@@ -38,6 +38,8 @@ describe("CLI dispatch", () => {
     expect(r.code).toBe(0);
     expect(r.out.includes("Getting Started")).toBeTruthy();
     expect(r.out.includes("Sandbox Management")).toBeTruthy();
+    expect(r.out.includes("slack-action-items")).toBeTruthy();
+    expect(r.out.includes("startup enable")).toBeTruthy();
     expect(r.out.includes("Policy Presets")).toBeTruthy();
     expect(r.out.includes("Compatibility Commands")).toBeTruthy();
   });
@@ -177,6 +179,14 @@ describe("CLI dispatch", () => {
     const r = run("debug --quik");
     expect(r.code).toBe(1);
     expect(r.out.includes("Unknown option")).toBeTruthy();
+  });
+
+  it("startup --help exits 0 and shows usage", () => {
+    const r = run("startup --help");
+    expect(r.code).toBe(0);
+    expect(r.out.includes("Install or run host startup recovery")).toBeTruthy();
+    expect(r.out.includes("startup enable")).toBeTruthy();
+    expect(r.out.includes("--with-services")).toBeTruthy();
   });
 
   it("help mentions debug command", () => {

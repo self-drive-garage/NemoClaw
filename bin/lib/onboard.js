@@ -735,13 +735,45 @@ function buildSandboxConfigSyncScript(selectionConfig) {
   // openclaw.json is immutable (root:root 444, Landlock read-only) — never
   // write to it at runtime.  Model routing is handled by the host-side
   // gateway (`openshell inference set` in Step 5), not from inside the
-  // sandbox.  We only write the NemoClaw selection config (~/.nemoclaw/).
+  // sandbox.  We only write the NemoClaw selection config (~/.nemoclaw/)
+  // and ask OpenClaw to seed its workspace bootstrap files in the writable
+  // workspace dir.
   return `
 set -euo pipefail
 mkdir -p ~/.nemoclaw
 cat > ~/.nemoclaw/config.json <<'EOF_NEMOCLAW_CFG'
 ${JSON.stringify(selectionConfig, null, 2)}
 EOF_NEMOCLAW_CFG
+
+OPENCLAW_AGENT_SCOPE_MODULE="$(ls /usr/local/lib/node_modules/openclaw/dist/agent-scope-*.js 2>/dev/null | head -n1 || true)"
+if [ -n "$OPENCLAW_AGENT_SCOPE_MODULE" ]; then
+  export OPENCLAW_AGENT_SCOPE_MODULE
+  node --input-type=module <<'EOF_OPENCLAW_WORKSPACE'
+import fs from "node:fs";
+
+let workspaceDir = "/sandbox/.openclaw/workspace";
+
+try {
+  const cfg = JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json", "utf8"));
+  const configuredWorkspace = cfg?.agents?.defaults?.workspace;
+  if (typeof configuredWorkspace === "string" && configuredWorkspace.trim()) {
+    workspaceDir = configuredWorkspace.trim();
+  }
+} catch {
+  // Fall back to the standard sandbox workspace path.
+}
+
+const scopeModulePath = process.env.OPENCLAW_AGENT_SCOPE_MODULE;
+if (scopeModulePath) {
+  const { D: ensureAgentWorkspace } = await import(\`file://\${scopeModulePath}\`);
+  await ensureAgentWorkspace({ dir: workspaceDir, ensureBootstrapFiles: true });
+  console.log(\`  Workspace bootstrapped: \${workspaceDir}\`);
+}
+EOF_OPENCLAW_WORKSPACE
+else
+  echo "  Warning: OpenClaw workspace bootstrap module not found; skipping workspace initialization." >&2
+fi
+
 exit
 `.trim();
 }

@@ -13,12 +13,14 @@ node_modules/
 .DS_Store
 desktop.ini
 Thumbs.db
+.idea/
 
 # Project-specific
 draft_newsletter_*
 research/
 specs/
 vdr-notes/
+nv_tools/
 
 # Security: secrets, credentials, and keys
 *_ecdsa
