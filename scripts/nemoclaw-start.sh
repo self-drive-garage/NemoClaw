@@ -485,15 +485,49 @@ openclaw() {
       echo "This rebuilds the sandbox with your updated settings." >&2
       return 1
       ;;
+    config)
+      case "$2" in
+        set | unset)
+          echo "Error: 'openclaw config $2' cannot modify config inside the sandbox." >&2
+          echo "The sandbox config is read-only (Landlock enforced) for security." >&2
+          echo "" >&2
+          echo "To change your configuration, exit the sandbox and run:" >&2
+          echo "  nemoclaw onboard --resume" >&2
+          echo "" >&2
+          echo "This rebuilds the sandbox with your updated settings." >&2
+          return 1
+          ;;
+      esac
+      ;;
+    channels)
+      case "$2" in
+        list | "" | -h | --help) ;;
+        *)
+          echo "Error: 'openclaw channels $2' cannot modify channels inside the sandbox." >&2
+          echo "The sandbox config is read-only (Landlock enforced) for security." >&2
+          echo "" >&2
+          echo "To add or remove messaging channels, exit the sandbox and run:" >&2
+          echo "  nemoclaw <sandbox> channels add <telegram|discord|slack>" >&2
+          echo "  nemoclaw <sandbox> channels remove <telegram|discord|slack>" >&2
+          echo "" >&2
+          echo "These stage the change and rebuild the sandbox to apply it." >&2
+          return 1
+          ;;
+      esac
+      ;;
     agent)
-      # Warn when --local is used — it bypasses gateway protections including
-      # secret scanning, network policy, and inference auth. Ref: #1632
+      # Block --local inside sandbox — it bypasses gateway protections and can
+      # crash the container's main process, bricking the sandbox. Ref: #1632, #2016
       local _arg
       for _arg in "$@"; do
         if [ "$_arg" = "--local" ]; then
-          echo "[SECURITY] Warning: 'openclaw agent --local' bypasses the NemoClaw gateway." >&2
-          echo "[SECURITY] Secret scanning, network policy, and inference auth are NOT enforced in local mode." >&2
-          break
+          echo "Error: 'openclaw agent --local' is not supported inside NemoClaw sandboxes." >&2
+          echo "The --local flag bypasses the gateway's security protections (secret scanning," >&2
+          echo "network policy, inference auth) and can crash the sandbox." >&2
+          echo "" >&2
+          echo "Instead, run without --local to use the gateway's managed inference route:" >&2
+          echo "  openclaw agent --agent main -m \"hello\"" >&2
+          return 1
         fi
       done
       ;;
@@ -515,6 +549,11 @@ GUARD
     elif [ -w "$rc_file" ] || [ -w "$(dirname "$rc_file")" ]; then
       printf '\n%s\n' "$snippet" >>"$rc_file"
     fi
+  done
+  # Final lock after all rc-file mutations (export_gateway_token + this
+  # function) are complete so Landlock read_only enforcement holds.
+  for rc_file in "${_SANDBOX_HOME}/.bashrc" "${_SANDBOX_HOME}/.profile"; do
+    [ -f "$rc_file" ] && chmod 444 "$rc_file"
   done
 }
 
@@ -741,6 +780,18 @@ export http_proxy="$_PROXY_URL"
 export https_proxy="$_PROXY_URL"
 export no_proxy="$_NO_PROXY_VAL"
 
+# axios + NODE_USE_ENV_PROXY double-proxy fix (NemoClaw#2109).
+# Node.js 22 sets NODE_USE_ENV_PROXY=1 in the OpenShell base image, which
+# intercepts all https.request() calls and handles proxy via CONNECT tunnel.
+# axios also reads HTTPS_PROXY, causing a double-proxy conflict that produces
+# malformed URLs (https://host:3128/) rejected by the L7 proxy.
+# The preload script disables axios's own proxy handling so NODE_USE_ENV_PROXY
+# takes over — the correct path for all other Node.js HTTP clients.
+_AXIOS_FIX_SCRIPT="/opt/nemoclaw-blueprint/scripts/axios-proxy-fix.js"
+if [ -f "$_AXIOS_FIX_SCRIPT" ] && [ "${NODE_USE_ENV_PROXY:-}" = "1" ]; then
+  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require $_AXIOS_FIX_SCRIPT"
+fi
+
 # OpenShell re-injects narrow NO_PROXY/no_proxy=127.0.0.1,localhost,::1 every
 # time a user connects via `openshell sandbox connect`.  The connect path spawns
 # `/bin/bash -i` (interactive, non-login), which sources ~/.bashrc — NOT
@@ -771,6 +822,12 @@ export http_proxy="$_PROXY_URL"
 export https_proxy="$_PROXY_URL"
 export no_proxy="$_NO_PROXY_VAL"
 PROXYEOF
+  # axios double-proxy fix: also expose NODE_OPTIONS in connect sessions so that
+  # interactive shells and user commands started via `openshell sandbox connect`
+  # also benefit from the preload. (NemoClaw#2109)
+  if [ -f "$_AXIOS_FIX_SCRIPT" ] && [ "${NODE_USE_ENV_PROXY:-}" = "1" ]; then
+    echo "export NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require $_AXIOS_FIX_SCRIPT\""
+  fi
   # Tool cache redirects — generated from _TOOL_REDIRECTS (single source of truth)
   echo '# Tool cache redirects — /sandbox is Landlock read-only (#804)'
   for _redir in "${_TOOL_REDIRECTS[@]}"; do
