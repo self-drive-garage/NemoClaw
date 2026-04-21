@@ -16,6 +16,7 @@ Thumbs.db
 .idea/
 
 # Project-specific
+.nemoclaw-maintainer/
 draft_newsletter_*
 research/
 specs/
