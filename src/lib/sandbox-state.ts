@@ -54,6 +54,17 @@ export interface RebuildManifest {
   blueprintDigest: string | null;
   policyPresets?: string[];
   instances?: InstanceBackup[];
+  // Optional user-provided label for `snapshot restore <name>`.
+  name?: string;
+}
+
+// Manifest enriched with a virtual version number computed at list time.
+// Versions are position-based (v1 = oldest by timestamp) and NOT persisted,
+// so they can shift if snapshots are deleted.
+export type SnapshotEntry = RebuildManifest & { snapshotVersion: number };
+
+export interface BackupOptions {
+  name?: string | null;
 }
 
 export interface InstanceBackup {
@@ -66,9 +77,14 @@ export interface InstanceBackup {
 
 export interface BackupResult {
   success: boolean;
-  manifest: RebuildManifest;
+  // Only set once the backup has been written to disk — absent on
+  // precondition failures like an invalid --name.
+  manifest?: RebuildManifest;
   backedUpDirs: string[];
   failedDirs: string[];
+  // Set when the failure is a precondition (e.g. duplicate --name) rather
+  // than a mid-backup error. CLI surfaces this to the user verbatim.
+  error?: string;
 }
 
 export interface RestoreResult {
@@ -164,9 +180,19 @@ export function validateTarEntries(
 
 /**
  * Walk a directory and return violations for any symlinks whose
- * resolved targets escape rootPath.
+ * resolved targets don't land within any of the allowed roots.
+ *
+ * `allowedRoots` always includes the extraction directory (the local host
+ * path). Callers pass additional roots — notably `/sandbox` — to permit
+ * legitimate intra-sandbox symlinks baked into the sandbox base image
+ * (e.g. `/sandbox/.openclaw` → `/sandbox/.openclaw-data`). Those look
+ * like "escapes" relative to the extraction temp dir on the host, but
+ * are intra-sandbox once the backup is restored. See issue #2268.
  */
-function auditExtractedSymlinks(dirPath: string, rootPath: string): string[] {
+function auditExtractedSymlinks(
+  dirPath: string,
+  allowedRoots: string[],
+): string[] {
   const violations: string[] = [];
   if (!existsSync(dirPath)) return violations;
 
@@ -178,7 +204,10 @@ function auditExtractedSymlinks(dirPath: string, rootPath: string): string[] {
         if (stat.isSymbolicLink()) {
           const linkTarget = readlinkSync(fullPath);
           const resolvedTarget = path.resolve(path.dirname(fullPath), linkTarget);
-          if (!isWithinRoot(resolvedTarget, rootPath)) {
+          const inAnyAllowedRoot = allowedRoots.some((root) =>
+            isWithinRoot(resolvedTarget, root),
+          );
+          if (!inAnyAllowedRoot) {
             violations.push(`symlink escape: ${fullPath} -> ${linkTarget} (resolves to ${resolvedTarget})`);
           }
         } else if (stat.isDirectory()) {
@@ -266,8 +295,11 @@ export function safeTarExtract(
   }
 
   // Phase 3: Post-extraction symlink audit (symlink targets are not
-  // visible in `tar -tf` output, so we must check after extraction)
-  const symlinkViolations = auditExtractedSymlinks(targetDir, targetDir);
+  // visible in `tar -tf` output, so we must check after extraction).
+  // Allow targets inside either the host extraction dir OR the canonical
+  // sandbox root (/sandbox) — the latter covers legitimate intra-sandbox
+  // symlinks baked into the base image (see #2268).
+  const symlinkViolations = auditExtractedSymlinks(targetDir, [targetDir, "/sandbox"]);
   if (symlinkViolations.length > 0) {
     // Nuke the extraction — do not leave attacker-controlled symlinks on host
     try {
@@ -380,13 +412,37 @@ function _log(msg: string): void {
   if (_verbose()) console.error(`  [sandbox-state ${new Date().toISOString()}] ${msg}`);
 }
 
+// ── Naming / versioning helpers ────────────────────────────────────
+
+const VERSION_SELECTOR_RE = /^v(\d+)$/i;
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+
+export function validateSnapshotName(name: string): string | null {
+  if (!NAME_RE.test(name)) {
+    return (
+      `Invalid snapshot name '${name}'. Use 1–63 chars from [A-Za-z0-9._-], ` +
+      `starting with an alphanumeric.`
+    );
+  }
+  if (VERSION_SELECTOR_RE.test(name)) {
+    return (
+      `Snapshot name '${name}' conflicts with the auto-assigned version format ` +
+      `(v<N>). Pick a different name.`
+    );
+  }
+  return null;
+}
+
 // ── Backup ─────────────────────────────────────────────────────────
 
 /**
  * Back up all state directories from a running sandbox.
  * Uses the agent manifest to determine which directories contain state.
  */
-export function backupSandboxState(sandboxName: string): BackupResult {
+export function backupSandboxState(
+  sandboxName: string,
+  options: BackupOptions = {},
+): BackupResult {
   const sb = registry.getSandbox(sandboxName);
   const agentName = sb?.agent || "openclaw";
   const agent = loadAgent(agentName);
@@ -394,6 +450,34 @@ export function backupSandboxState(sandboxName: string): BackupResult {
   const stateDirs = agent.stateDirs;
   _log(`backupSandboxState: agent=${agentName}, writableDir=${writableDir}, stateDirs=[${stateDirs.join(",")}]`);
 
+  // Validate user-supplied name and check for conflicts BEFORE creating any
+  // files on disk.
+  const existingBackups = listBackups(sandboxName);
+  // Preserve empty strings so `--name ""` hits validateSnapshotName and fails
+  // with a clear error instead of silently creating an unnamed snapshot.
+  const providedName = options.name ?? null;
+  if (providedName !== null) {
+    const validationError = validateSnapshotName(providedName);
+    if (validationError) {
+      return {
+        success: false,
+        backedUpDirs: [],
+        failedDirs: [],
+        error: validationError,
+      };
+    }
+    const conflict = existingBackups.find((b) => b.name === providedName);
+    if (conflict) {
+      return {
+        success: false,
+        backedUpDirs: [],
+        failedDirs: [],
+        error:
+          `Snapshot name '${providedName}' already exists for '${sandboxName}' ` +
+          `(at ${conflict.timestamp}). Pick a different name or delete the existing snapshot.`,
+      };
+    }
+  }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(REBUILD_BACKUPS_DIR, sandboxName, timestamp);
   mkdirSync(backupPath, { recursive: true, mode: 0o700 });
@@ -418,6 +502,7 @@ export function backupSandboxState(sandboxName: string): BackupResult {
     backupPath,
     blueprintDigest: computeBlueprintDigest(),
     policyPresets,
+    ...(providedName !== null ? { name: providedName } : {}),
   };
 
   const backedUpDirs: string[] = [];
@@ -633,28 +718,76 @@ function readManifest(backupPath: string): RebuildManifest | null {
 // ── Listing ────────────────────────────────────────────────────────
 
 /**
- * List available backups for a sandbox, newest first.
+ * List available backups for a sandbox, newest first, each enriched with a
+ * virtual `snapshotVersion` number.
+ *
+ * Version numbers are position-based (v1 = oldest by timestamp, vN = newest)
+ * and computed fresh on every call — they are NOT persisted, so deleting a
+ * snapshot will re-number everything newer than it.
  */
-export function listBackups(sandboxName: string): RebuildManifest[] {
+export function listBackups(sandboxName: string): SnapshotEntry[] {
   const dir = path.join(REBUILD_BACKUPS_DIR, sandboxName);
   if (!existsSync(dir)) return [];
 
-  const entries = readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .sort((a, b) => b.name.localeCompare(a.name));
+  const rawEntries = readdirSync(dir, { withFileTypes: true }).filter((e) =>
+    e.isDirectory(),
+  );
 
   const manifests: RebuildManifest[] = [];
-  for (const entry of entries) {
+  for (const entry of rawEntries) {
     const m = readManifest(path.join(dir, entry.name));
     if (m) manifests.push(m);
   }
-  return manifests;
+
+  // Assign version numbers by timestamp-ascending position (v1 = oldest).
+  const asc = [...manifests].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const numbered: SnapshotEntry[] = asc.map((m, i) => ({
+    ...m,
+    snapshotVersion: i + 1,
+  }));
+
+  // Return newest-first for display.
+  return numbered.reverse();
 }
 
 /**
  * Get the most recent backup for a sandbox, or null.
  */
-export function getLatestBackup(sandboxName: string): RebuildManifest | null {
+export function getLatestBackup(sandboxName: string): SnapshotEntry | null {
   const backups = listBackups(sandboxName);
   return backups[0] || null;
+}
+
+export interface SnapshotMatchResult {
+  match: SnapshotEntry | null;
+}
+
+/**
+ * Resolve a user-supplied snapshot selector to a single backup.
+ *
+ * Selector precedence:
+ *   1. `v<N>` — exact (virtual) snapshotVersion match (case-insensitive)
+ *   2. exact user-assigned name match
+ *   3. exact timestamp match
+ */
+export function findBackup(
+  sandboxName: string,
+  selector: string,
+): SnapshotMatchResult {
+  const backups = listBackups(sandboxName);
+
+  const versionMatch = VERSION_SELECTOR_RE.exec(selector);
+  if (versionMatch) {
+    const wanted = Number.parseInt(versionMatch[1], 10);
+    const hit = backups.find((b) => b.snapshotVersion === wanted);
+    return { match: hit ?? null };
+  }
+
+  const byName = backups.find((b) => b.name === selector);
+  if (byName) return { match: byName };
+
+  const byExactTimestamp = backups.find((b) => b.timestamp === selector);
+  if (byExactTimestamp) return { match: byExactTimestamp };
+
+  return { match: null };
 }

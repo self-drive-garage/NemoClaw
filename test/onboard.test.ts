@@ -164,8 +164,16 @@ describe("onboard helpers", () => {
 
   describe("computeSetupPresetSuggestions", () => {
     const known = [
-      "npm", "pypi", "huggingface", "brew", "brave",
-      "slack", "discord", "telegram", "jira", "outlook",
+      "npm",
+      "pypi",
+      "huggingface",
+      "brew",
+      "brave",
+      "slack",
+      "discord",
+      "telegram",
+      "jira",
+      "outlook",
       "local-inference",
     ];
 
@@ -924,13 +932,13 @@ describe("onboard helpers", () => {
       path.join(blueprintDir, "blueprint.yaml"),
       [
         'version: "0.1.0"',
-        'min_openshell_version: "0.0.24"',
-        'max_openshell_version: "0.0.26"',
+        'min_openshell_version: "0.0.32"',
+        'max_openshell_version: "0.0.32"',
         'min_openclaw_version: "2026.3.0"',
       ].join("\n"),
     );
     try {
-      expect(getBlueprintMaxOpenshellVersion(tmpDir)).toBe("0.0.26");
+      expect(getBlueprintMaxOpenshellVersion(tmpDir)).toBe("0.0.32");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -2230,6 +2238,10 @@ const runner = require(${runnerPath});
 const _n = (c) => (Array.isArray(c) ? c.join(" ") : String(c)).replace(/'/g, "");
 const registry = require(${registryPath});
 const credentials = require(${credentialsPath});
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const commands = [];
 runner.run = (command, opts = {}) => {
@@ -2727,6 +2739,7 @@ const { createSandbox } = require(${onboardPath});
   process.env.OPENSHELL_GATEWAY = "nemoclaw";
   process.env.DISCORD_BOT_TOKEN = "test-discord-token-value";
   process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
+  process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
   process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
   const sandboxName = await createSandbox(null, "gpt-5.4");
   console.log(JSON.stringify({ sandboxName, commands }));
@@ -2787,10 +2800,14 @@ const { createSandbox } = require(${onboardPath});
       assert.match(createCommand.command, /--provider my-assistant-slack-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-telegram-bridge/);
 
-      // Verify real token values are NOT in the sandbox create command
+      // Discord and Telegram tokens must NOT appear in the sandbox create command
+      // (they flow exclusively through the openshell provider credential system).
       assert.doesNotMatch(createCommand.command, /test-discord-token-value/);
-      assert.doesNotMatch(createCommand.command, /xoxb-test-slack-token-value/);
       assert.doesNotMatch(createCommand.command, /123456:ABC-test-telegram-token/);
+      // Slack tokens ARE injected as --env args so the baked openclaw.json
+      // openshell:resolve:env: placeholders resolve inside the container.
+      assert.match(createCommand.command, /SLACK_BOT_TOKEN=xoxb-test-slack-token-value/);
+      assert.match(createCommand.command, /SLACK_APP_TOKEN=xapp-test-slack-app-token-value/);
 
       // Verify blocked credentials are NOT in the sandbox spawn environment
       assert.ok(createCommand.env, "expected env to be captured from spawn call");
@@ -2803,6 +2820,11 @@ const { createSandbox } = require(${onboardPath});
         createCommand.env.SLACK_BOT_TOKEN,
         undefined,
         "SLACK_BOT_TOKEN must not be in sandbox env",
+      );
+      assert.equal(
+        createCommand.env.SLACK_APP_TOKEN,
+        undefined,
+        "SLACK_APP_TOKEN must not be in sandbox env",
       );
       assert.equal(
         createCommand.env.TELEGRAM_BOT_TOKEN,
@@ -2823,7 +2845,11 @@ const { createSandbox } = require(${onboardPath});
       );
       assert.ok(
         !envString.includes("xoxb-test-slack-token-value"),
-        "Slack token value must not leak into sandbox env",
+        "Slack bot token value must not leak into sandbox spawn env",
+      );
+      assert.ok(
+        !envString.includes("xapp-test-slack-app-token-value"),
+        "Slack app token value must not leak into sandbox spawn env",
       );
       assert.ok(
         !envString.includes("123456:ABC-test-telegram-token"),
@@ -3195,9 +3221,7 @@ const { createSandbox } = require(${onboardPath});
     { timeout: 60_000 },
     async () => {
       const repoRoot = path.join(import.meta.dirname, "..");
-      const tmpDir = fs.mkdtempSync(
-        path.join(os.tmpdir(), "nemoclaw-onboard-recreate-preserves-"),
-      );
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-recreate-preserves-"));
       const fakeBin = path.join(tmpDir, "bin");
       const scriptPath = path.join(tmpDir, "recreate-preserves.js");
       const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
@@ -3327,10 +3351,34 @@ const runner = require(${runnerPath});
 const _n = (c) => (Array.isArray(c) ? c.join(" ") : String(c)).replace(/'/g, "");
 const registry = require(${registryPath});
 const credentials = require(${credentialsPath});
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const commands = [];
 runner.run = (command, opts = {}) => {
+  const commandString = Array.isArray(command) ? command.join(" ") : String(command);
+  if (_n(command).includes("sandbox download")) {
+    const parts = commandString.match(/'([^']*)'/g) || [];
+    const downloadDir = Array.isArray(command)
+      ? String(command[command.length - 1] || "")
+      : parts.length
+        ? parts[parts.length - 1].slice(1, -1)
+        : null;
+    if (downloadDir) {
+      fs.mkdirSync(downloadDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(downloadDir, "config.json"),
+        JSON.stringify({ provider: "nvidia-prod", model: "gpt-5.4" }),
+      );
+    }
+  }
   commands.push({ command: _n(command), env: opts.env || null });
+  return { status: 0 };
+};
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ type: "runFile", command: _n([file, ...args]), file, args, env: opts.env || null });
   return { status: 0 };
 };
 runner.runCapture = (command) => {
@@ -3343,6 +3391,18 @@ registry.getSandbox = () => ({ name: "my-assistant", gpuEnabled: false });
 
 // Mock prompt to return "y" (reuse)
 credentials.prompt = async () => "y";
+
+childProcess.spawn = (...args) => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  commands.push({ command: args[1]?.[1] || String(args[0]), env: args[2]?.env || null });
+  process.nextTick(() => {
+    child.stdout.emit("data", Buffer.from("Created sandbox: my-assistant\n"));
+    child.emit("close", 0);
+  });
+  return child;
+};
 
 const { createSandbox } = require(${onboardPath});
 
@@ -3398,7 +3458,7 @@ const { createSandbox } = require(${onboardPath});
   );
 
   it(
-    "interactive mode deletes and recreates sandbox when user declines reuse",
+    "interactive mode deletes and recreates sandbox when user confirms drift recreate",
     { timeout: 60_000 },
     async () => {
       const repoRoot = path.join(import.meta.dirname, "..");
@@ -3424,10 +3484,32 @@ const registry = require(${registryPath});
 const credentials = require(${credentialsPath});
 const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const commands = [];
 runner.run = (command, opts = {}) => {
+  const commandString = Array.isArray(command) ? command.join(" ") : String(command);
+  if (_n(command).includes("sandbox download")) {
+    const parts = commandString.match(/'([^']*)'/g) || [];
+    const downloadDir = Array.isArray(command)
+      ? String(command[command.length - 1] || "")
+      : parts.length
+        ? parts[parts.length - 1].slice(1, -1)
+        : null;
+    if (downloadDir) {
+      fs.mkdirSync(downloadDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(downloadDir, "config.json"),
+        JSON.stringify({ provider: "openai-prod", model: "gpt-4o" }),
+      );
+    }
+  }
   commands.push({ command: _n(command), env: opts.env || null });
+  return { status: 0 };
+};
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ type: "runFile", command: _n([file, ...args]), file, args, env: opts.env || null });
   return { status: 0 };
 };
 runner.runCapture = (command) => {
@@ -3444,8 +3526,8 @@ registry.removeSandbox = () => true;
 const preflight = require(${JSON.stringify(path.join(repoRoot, "dist", "lib", "preflight.js"))});
 preflight.checkPortAvailable = async () => ({ ok: true });
 
-// Mock prompt to return "n" (decline reuse)
-credentials.prompt = async () => "n";
+// Mock prompt to return "y" (confirm recreate)
+credentials.prompt = async () => "y";
 
 childProcess.spawn = (...args) => {
   const child = new EventEmitter();
@@ -3497,16 +3579,16 @@ const { createSandbox } = require(${onboardPath});
       const payload = JSON.parse(payloadLine);
 
       assert.ok(
-        payload.commands.some((entry) => entry.command.includes("sandbox delete")),
-        "should delete existing sandbox when user declines reuse",
+        payload.commands.some((entry) => /sandbox.*delete/.test(String(entry.command))),
+        "should delete existing sandbox when user confirms recreate",
       );
       assert.ok(
-        payload.commands.some((entry) => entry.command.includes("sandbox create")),
-        "should create a new sandbox when user declines reuse",
+        payload.commands.some((entry) => /sandbox.*create/.test(String(entry.command))),
+        "should create a new sandbox when user confirms recreate",
       );
       assert.ok(
-        result.stdout.includes("already exists"),
-        "should show 'already exists' message before prompting",
+        result.stdout.includes("requested inference selection changed"),
+        "should show drift warning before prompting",
       );
     },
   );
@@ -3638,6 +3720,34 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(result.stdout.includes("not ready"), "should mention sandbox is not ready");
     },
   );
+  it("detects provider/model drift and avoids silent reuse", () => {
+    const source = fs.readFileSync(
+      path.join(import.meta.dirname, "..", "src", "lib", "onboard.ts"),
+      "utf-8",
+    );
+    assert.match(source, /const selectionDrift = getSelectionDrift\(sandboxName, provider, model\);/);
+    assert.match(
+      source,
+      /const confirmedSelectionDrift = selectionDrift\.changed && !selectionDrift\.unknown;/,
+    );
+    assert.match(source, /unknown:\s*true/);
+    assert.match(source, /if \(confirmedSelectionDrift\)/);
+    assert.match(source, /Recreating sandbox due to provider\/model drift/);
+    assert.match(
+      source,
+      /Sandbox '\$\{sandboxName\}' exists — recreating to apply model\/provider change\./,
+    );
+  });
+
+  it("prompts before destructive recreate when drift is detected in interactive mode", () => {
+    const source = fs.readFileSync(
+      path.join(import.meta.dirname, "..", "src", "lib", "onboard.ts"),
+      "utf-8",
+    );
+    assert.match(source, /async function confirmRecreateForSelectionDrift/);
+    assert.match(source, /Recreate sandbox '\$\{sandboxName\}' now\? \[y\/N\]:/);
+    assert.match(source, /Aborted\. Existing sandbox left unchanged\./);
+  });
 
   it("upsertProvider creates a new provider and returns ok on success", () => {
     const repoRoot = path.join(import.meta.dirname, "..");
@@ -4765,6 +4875,7 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 
 const commands = [];
+let hasExtraFileAtSpawn = false;
 runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
@@ -4785,7 +4896,15 @@ childProcess.spawn = (...args) => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  commands.push({ command: _n(args[1][1]), env: args[2]?.env || null });
+  const cmd = _n(args[1][1]);
+  commands.push({ command: cmd, env: args[2]?.env || null });
+  // Observe the staged build context state while the sandbox create is in
+  // flight — onboard deletes it once streamSandboxCreate resolves.
+  const fromMatch = cmd.match(/--from\s+(\S+)/);
+  if (fromMatch) {
+    const stagedDir = require("node:path").dirname(fromMatch[1]);
+    hasExtraFileAtSpawn = fs.existsSync(require("node:path").join(stagedDir, "extra.txt"));
+  }
   process.nextTick(() => {
     child.stdout.emit("data", Buffer.from("Created sandbox: my-assistant\n"));
     child.emit("close", 0);
@@ -4798,17 +4917,7 @@ const { createSandbox } = require(${onboardPath});
 (async () => {
   process.env.OPENSHELL_GATEWAY = "nemoclaw";
   const sandboxName = await createSandbox(null, "gpt-5.4", "openai-api", null, "my-assistant", null, null, ${customDockerfilePath});
-  // Verify the staged build context contains the extra file from the custom dir
-  const createCmd = commands.find((e) => e.command.includes("sandbox create"));
-  const fromMatch = createCmd && createCmd.command.match(/--from\s+(\S+)/);
-  let stagedDir = null;
-  let hasExtraFile = false;
-  if (fromMatch) {
-    const dockerfilePath = fromMatch[1];
-    stagedDir = require("node:path").dirname(dockerfilePath);
-    hasExtraFile = fs.existsSync(require("node:path").join(stagedDir, "extra.txt"));
-  }
-  console.log(JSON.stringify({ sandboxName, hasExtraFile }));
+  console.log(JSON.stringify({ sandboxName, hasExtraFile: hasExtraFileAtSpawn }));
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -4981,7 +5090,10 @@ const { createSandbox } = require(${onboardPath});
         fakeRef,
       );
       const patched = fs.readFileSync(dockerfilePath, "utf8");
-      assert.match(patched, /^ARG BASE_IMAGE=ghcr\.io\/nvidia\/nemoclaw\/sandbox-base@sha256:a{64}$/m);
+      assert.match(
+        patched,
+        /^ARG BASE_IMAGE=ghcr\.io\/nvidia\/nemoclaw\/sandbox-base@sha256:a{64}$/m,
+      );
       // Model patching still works alongside base image pinning
       assert.match(patched, /^ARG NEMOCLAW_MODEL=gpt-5\.4$/m);
     } finally {
@@ -5065,7 +5177,10 @@ const { createSandbox } = require(${onboardPath});
       );
       const patched = fs.readFileSync(dockerfilePath, "utf8");
       // No ARG BASE_IMAGE in original, so the ref should not appear
-      assert.ok(!patched.includes("ARG BASE_IMAGE="), "Should not inject BASE_IMAGE when line is absent");
+      assert.ok(
+        !patched.includes("ARG BASE_IMAGE="),
+        "Should not inject BASE_IMAGE when line is absent",
+      );
       // Other patching should still work
       assert.match(patched, /^ARG NEMOCLAW_MODEL=gpt-5\.4$/m);
     } finally {
