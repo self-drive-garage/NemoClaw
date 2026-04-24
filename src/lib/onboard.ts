@@ -1103,9 +1103,20 @@ cat > ~/.nemoclaw/config.json <<'EOF_NEMOCLAW_CFG'
 ${JSON.stringify(selectionConfig, null, 2)}
 EOF_NEMOCLAW_CFG
 
-OPENCLAW_AGENT_SCOPE_MODULE="$(ls /usr/local/lib/node_modules/openclaw/dist/agent-scope-*.js 2>/dev/null | head -n1 || true)"
-if [ -n "$OPENCLAW_AGENT_SCOPE_MODULE" ]; then
-  export OPENCLAW_AGENT_SCOPE_MODULE
+OPENCLAW_WORKSPACE_MODULE=""
+for candidate in \
+  /usr/local/lib/node_modules/openclaw/dist/extensionAPI.js \
+  /usr/local/lib/node_modules/openclaw/dist/workspace-*.js \
+  /usr/local/lib/node_modules/openclaw/dist/agent-scope-*.js
+do
+  if [ -f "$candidate" ]; then
+    OPENCLAW_WORKSPACE_MODULE="$candidate"
+    break
+  fi
+done
+
+if [ -n "$OPENCLAW_WORKSPACE_MODULE" ]; then
+  export OPENCLAW_WORKSPACE_MODULE
   node --input-type=module <<'EOF_OPENCLAW_WORKSPACE'
 import fs from "node:fs";
 
@@ -1121,9 +1132,23 @@ try {
   // Fall back to the standard sandbox workspace path.
 }
 
-const scopeModulePath = process.env.OPENCLAW_AGENT_SCOPE_MODULE;
-if (scopeModulePath) {
-  const { D: ensureAgentWorkspace } = await import(\`file://\${scopeModulePath}\`);
+const workspaceModulePath = process.env.OPENCLAW_WORKSPACE_MODULE;
+if (workspaceModulePath) {
+  const workspaceModule = await import(\`file://\${workspaceModulePath}\`);
+  const ensureAgentWorkspace =
+    typeof workspaceModule.ensureAgentWorkspace === "function"
+      ? workspaceModule.ensureAgentWorkspace
+      : typeof workspaceModule.d === "function"
+        ? workspaceModule.d
+        : typeof workspaceModule.D === "function"
+          ? workspaceModule.D
+          : null;
+  if (typeof ensureAgentWorkspace !== "function") {
+    console.error(
+      \`  Warning: OpenClaw workspace bootstrap module did not export ensureAgentWorkspace: \${workspaceModulePath}\`,
+    );
+    process.exit(0);
+  }
   await ensureAgentWorkspace({ dir: workspaceDir, ensureBootstrapFiles: true });
   console.log(\`  Workspace bootstrapped: \${workspaceDir}\`);
 }
@@ -5016,10 +5041,9 @@ async function checkTelegramReachability(token: string) {
     console.log("    This is commonly blocked by corporate network proxies.");
 
     if (isNonInteractive()) {
-      console.error(
-        "  Aborting onboarding in non-interactive mode due to Telegram network reachability failure.",
+      console.log(
+        "    Continuing in non-interactive mode; the Telegram bridge may stay offline until host network access is restored.",
       );
-      process.exit(1);
     } else {
       const answer = (await promptOrDefault("    Continue anyway? [y/N]: ", null, "n"))
         .trim()

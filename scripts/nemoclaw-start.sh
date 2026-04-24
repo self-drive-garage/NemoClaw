@@ -446,13 +446,13 @@ with open(config_file) as f:
     content = f.read()
 
 content = re.sub(
-    r'("botToken"\s*:\s*")openshell:resolve:env:SLACK_BOT_TOKEN(")',
+    r'("botToken(?:Ref)?"\s*:\s*")openshell:resolve:env:SLACK_BOT_TOKEN(")',
     lambda m: m.group(1) + bot_token_json + m.group(2),
     content,
 )
 if app_token:
     content = re.sub(
-        r'("appToken"\s*:\s*")openshell:resolve:env:SLACK_APP_TOKEN(")',
+        r'("appToken(?:Ref)?"\s*:\s*")openshell:resolve:env:SLACK_APP_TOKEN(")',
         lambda m: m.group(1) + app_token_json + m.group(2),
         content,
     )

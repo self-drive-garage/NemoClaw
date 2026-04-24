@@ -12,6 +12,7 @@ network_policies:
       - host: slack.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }
@@ -19,6 +20,7 @@ network_policies:
       - host: api.slack.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }
@@ -26,6 +28,7 @@ network_policies:
       - host: hooks.slack.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }

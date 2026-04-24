@@ -143,6 +143,51 @@ describe("onboard helpers", () => {
     }
   });
 
+  it("continues non-interactive Telegram reachability checks on host network failure", () => {
+    const repoRoot = path.join(import.meta.dirname, "..");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-telegram-reachability-"));
+    const scriptPath = path.join(tmpDir, "telegram-reachability.js");
+    const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
+    const httpProbePath = JSON.stringify(path.join(repoRoot, "dist", "lib", "http-probe.js"));
+
+    const script = String.raw`
+const httpProbe = require(${httpProbePath});
+httpProbe.runCurlProbe = () => ({
+  ok: false,
+  httpStatus: 0,
+  curlStatus: 28,
+  message: "Operation timed out",
+});
+process.env.NEMOCLAW_NON_INTERACTIVE = "1";
+const { checkTelegramReachability } = require(${onboardPath});
+process.exit = (code) => {
+  throw new Error("unexpected process.exit(" + code + ")");
+};
+
+(async () => {
+  await checkTelegramReachability("123456:test-token");
+  console.log("completed");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+`;
+    fs.writeFileSync(scriptPath, script);
+
+    const result = spawnSync(process.execPath, [scriptPath], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Continuing in non-interactive mode/);
+    assert.match(result.stdout, /completed/);
+  });
+
   it("suggests local-inference preset when provider is ollama-local", () => {
     const presets = getSuggestedPolicyPresets({ provider: "ollama-local" });
     expect(presets).toContain("local-inference");

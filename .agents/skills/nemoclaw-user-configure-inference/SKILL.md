@@ -361,7 +361,30 @@ $ NEMOCLAW_EXPERIMENTAL=1 \
 NemoClaw auto-detects the model from the running vLLM instance.
 To override the model, set `NEMOCLAW_MODEL`.
 
-## Step 10: NVIDIA NIM (Experimental)
+## Step 10: Slack Action-Items vLLM Launcher
+
+For the host-side Slack action-item extractor, NemoClaw includes a local vLLM
+launcher that defaults to `Qwen/Qwen2.5-VL-7B-Instruct`.
+The script serves the model as `qwen-action-items`, binds
+`http://localhost:8001/v1`, and uses GPU `0` by default.
+
+```console
+$ scripts/start-slack-action-items-vllm.sh
+```
+
+Then run the extractor against the local server.
+
+```console
+$ python3 -m nv_tools.commands.slack_action_items \
+    --sandbox xiaocars \
+    --context-messages 3 \
+    --local-qwen-vl-7b
+```
+
+Use `--help` on the launcher to override the model, port, served model name,
+GPU list, tensor parallel size, and log behavior.
+
+## Step 11: NVIDIA NIM (Experimental)
 
 NemoClaw can pull, start, and manage a NIM container on hosts with a NIM-capable NVIDIA GPU.
 
@@ -382,6 +405,53 @@ In non-interactive mode, onboard exits with login instructions if Docker is not 
 > **Note:** NIM uses vLLM internally.
 > The same `chat/completions` API path restriction applies.
 
+### Nemotron 3 Super Launcher
+
+For hosts with 8 x H100 80GB GPUs, NemoClaw includes a helper script that
+starts `nvidia/nemotron-3-super-120b-a12b` as a local NIM container.
+The script uses the NIM image `nvcr.io/nim/nvidia/nemotron-3-super-120b-a12b:latest`,
+maps the OpenAI-compatible endpoint to `http://localhost:8000/v1`, mounts a
+local NIM cache, and waits for `/v1/models` to become healthy.
+
+```console
+$ scripts/start-nemotron-super-nim.sh --no-tail
+```
+
+Check status with:
+
+```console
+$ scripts/start-nemotron-super-nim.sh --status
+```
+
+If previous local inference jobs are still holding GPU memory, pass
+`--kill-gpu-processes` to terminate processes using the selected GPUs before
+the preflight check. The script sends `TERM`, waits 10 seconds by default, and
+then sends `KILL` to any remaining GPU processes.
+
+```console
+$ scripts/start-nemotron-super-nim.sh --replace --kill-gpu-processes --no-tail
+```
+
+On PCIe-only multi-GPU hosts, a first generation request can fail with a CUDA
+peer-memory or NVLink-related worker error even though `/v1/models` is healthy.
+Restart with CUDA graph capture disabled first:
+
+```console
+$ scripts/start-nemotron-super-nim.sh --replace --disable-cuda-graph --no-tail
+```
+
+If the worker still fails on peer GPU memory, also disable NCCL peer-to-peer
+transport:
+
+```console
+$ scripts/start-nemotron-super-nim.sh --replace --disable-cuda-graph --disable-nccl-p2p --no-tail
+```
+
+If you start NIM manually with this script, point NemoClaw at the already
+running endpoint as a local vLLM or compatible OpenAI endpoint. Do not also
+select the managed **Local NVIDIA NIM** onboarding path for the same port,
+because that path starts its own NIM container.
+
 ### Non-Interactive Setup
 
 ```console
@@ -392,7 +462,7 @@ $ NEMOCLAW_EXPERIMENTAL=1 \
 
 To select a specific model, set `NEMOCLAW_MODEL`.
 
-## Step 11: Timeout Configuration
+## Step 12: Timeout Configuration
 
 Local inference requests use a default timeout of 180 seconds.
 Large prompts on hardware such as DGX Spark can exceed shorter timeouts, so NemoClaw sets a higher default for local providers (Ollama, vLLM, NIM).
@@ -408,7 +478,7 @@ The value is in seconds.
 This setting is baked into the sandbox at build time.
 Changing it after onboarding requires re-running `nemoclaw onboard`.
 
-## Step 12: Verify the Configuration
+## Step 13: Verify the Configuration
 
 After onboarding completes, confirm the active provider and model.
 
@@ -418,7 +488,7 @@ $ nemoclaw <name> status
 
 The output shows the provider label (for example, "Local vLLM" or "Other OpenAI-compatible endpoint") and the active model.
 
-## Step 13: Switch Models at Runtime
+## Step 14: Switch Models at Runtime
 
 You can change the model without re-running onboard.
 Refer to Switch Inference Models (use the `nemoclaw-user-configure-inference` skill) for the full procedure.

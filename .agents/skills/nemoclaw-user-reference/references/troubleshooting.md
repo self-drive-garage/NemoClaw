@@ -277,6 +277,12 @@ $ nemoclaw onboard
 After a host reboot, the container runtime, OpenShell gateway, and sandbox may not be running.
 Follow these steps to reconnect.
 
+If you want NemoClaw to do this recovery automatically at login or boot, install the startup hook once:
+
+```console
+$ nemoclaw startup enable
+```
+
 1. Start the container runtime.
 
    - **Linux:** start Docker if it is not already running (`sudo systemctl start docker`)

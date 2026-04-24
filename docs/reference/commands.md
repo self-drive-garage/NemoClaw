@@ -213,7 +213,7 @@ Search Slack from the host and sync LLM-extracted action-item candidates into th
 This command is intended for the "Slack as inbox, memory as source of truth" workflow: by default it searches the last 5 days of Slack messages that mention the authenticated user, feeds those messages into the sandbox's configured inference model, and writes the extracted candidates into a managed triage section.
 
 ```console
-$ nemoclaw slack-action-items [--sandbox NAME] [--days N] [--query QUERY] [--channel NAME|ID] [--max-messages N] [--dry-run]
+$ nemoclaw slack-action-items [--sandbox NAME] [--days N] [--query QUERY] [--channel NAME|ID] [--max-messages N] [--inference-provider PROVIDER] [--inference-model MODEL] [--dry-run]
 ```
 
 Use a host-side Slack user token with the scopes needed for your search strategy.
@@ -233,6 +233,11 @@ Imported items are marked `Status: triage`, include an LLM-derived Slack signal,
 | `--page-size N` | Slack search page size (default: `100`) |
 | `--max-pages N` | Maximum Slack search pages to scan (default: `5`) |
 | `--token-env NAME` | Read the Slack token from a different environment variable or credential key |
+| `--inference-provider PROVIDER` | Override the extraction provider for this run only, such as `vllm-local` to use host GPUs |
+| `--inference-model MODEL` | Override the extraction model ID for this run only |
+| `--inference-endpoint-url URL` | Override the extraction base URL for this run only |
+| `--inference-credential-env NAME` | Override which credential key supplies the extraction token for this run |
+| `--local-qwen-vl-7b` | Use the host-local Qwen2.5-VL-7B vLLM shortcut for extraction |
 | `--dry-run` | Print the generated `MEMORY.md` section without uploading it to the sandbox |
 
 Example: preview the managed memory section before writing it:
@@ -255,6 +260,23 @@ Example: restrict the search to a specific channel:
 $ SLACK_USER_TOKEN=xoxp-... \
   nemoclaw slack-action-items --sandbox my-assistant --channel team-ops --days 7
 ```
+
+Example: force the extractor to use a host-local vLLM server instead of the sandbox's default cloud route:
+
+```console
+$ scripts/start-slack-action-items-vllm.sh
+
+$ SLACK_USER_TOKEN=xoxp-... \
+  python3 -m nv_tools.commands.slack_action_items \
+    --sandbox xiaocars \
+    --context-messages 3 \
+    --local-qwen-vl-7b
+```
+
+The helper script starts `Qwen/Qwen2.5-VL-7B-Instruct` as `qwen-action-items`
+on `http://localhost:8001/v1` and uses GPU `0` by default. The shortcut expands
+to `--inference-provider vllm-local --inference-model qwen-action-items
+--inference-endpoint-url http://localhost:8001/v1`.
 
 ### `nemoclaw deploy`
 

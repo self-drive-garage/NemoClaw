@@ -475,6 +475,17 @@ describe("runtime CORS origin override (#719)", () => {
   });
 });
 
+describe("Slack token placeholder resolution", () => {
+  const src = fs.readFileSync(START_SCRIPT, "utf-8");
+
+  it("rewrites both legacy and current OpenClaw Slack token keys", () => {
+    expect(src).toMatch(/botToken\(\?:Ref\)\?/);
+    expect(src).toMatch(/appToken\(\?:Ref\)\?/);
+    expect(src).toContain("openshell:resolve:env:SLACK_BOT_TOKEN");
+    expect(src).toContain("openshell:resolve:env:SLACK_APP_TOKEN");
+  });
+});
+
 describe("nemoclaw-start auto-pair client whitelisting (#117)", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
 

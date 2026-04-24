@@ -183,6 +183,77 @@ Sandboxes with an active SSH session are marked with a `●` indicator so you ca
 $ nemoclaw list
 ```
 
+### `nemoclaw slack-action-items`
+
+Search Slack from the host and sync LLM-extracted action-item candidates into the sandbox's `MEMORY.md` (use the `nemoclaw-user-workspace` skill).
+This command is intended for the "Slack as inbox, memory as source of truth" workflow: by default it searches the last 5 days of Slack messages that mention the authenticated user, feeds those messages into the sandbox's configured inference model, and writes the extracted candidates into a managed triage section.
+
+```console
+$ nemoclaw slack-action-items [--sandbox NAME] [--days N] [--query QUERY] [--channel NAME|ID] [--max-messages N] [--inference-provider PROVIDER] [--inference-model MODEL] [--dry-run]
+```
+
+Use a host-side Slack user token with the scopes needed for your search strategy.
+Set it in `SLACK_USER_TOKEN` or save it in `~/.nemoclaw/credentials.json`.
+This command uses Slack's `search.messages` API and requires a user token; bot tokens are not supported for the default host-side mention search.
+
+The command writes a managed block delimited by HTML comments so repeated syncs replace only the imported Slack section and leave the rest of `MEMORY.md` intact.
+Imported items are marked `Status: triage`, include an LLM-derived Slack signal, and leave canonical completion/progress tracking to the rest of `MEMORY.md`.
+
+| Flag | Description |
+|------|-------------|
+| `--sandbox NAME` | Update the selected sandbox instead of the default sandbox |
+| `--days N` | Default Slack lookback window when `--query` is omitted (default: `5`) |
+| `--query QUERY` | Override the default mention-based search query |
+| `--channel NAME\|ID` | Narrow the Slack search scope to one channel |
+| `--max-messages N` | Cap how many Slack messages are sent to the LLM (default: `100`) |
+| `--page-size N` | Slack search page size (default: `100`) |
+| `--max-pages N` | Maximum Slack search pages to scan (default: `5`) |
+| `--token-env NAME` | Read the Slack token from a different environment variable or credential key |
+| `--inference-provider PROVIDER` | Override the extraction provider for this run only, such as `vllm-local` to use host GPUs |
+| `--inference-model MODEL` | Override the extraction model ID for this run only |
+| `--inference-endpoint-url URL` | Override the extraction base URL for this run only |
+| `--inference-credential-env NAME` | Override which credential key supplies the extraction token for this run |
+| `--local-qwen-vl-7b` | Use the host-local Qwen2.5-VL-7B vLLM shortcut for extraction |
+| `--dry-run` | Print the generated `MEMORY.md` section without uploading it to the sandbox |
+
+Example: preview the managed memory section before writing it:
+
+```console
+$ SLACK_USER_TOKEN=xoxp-... \
+  nemoclaw slack-action-items --sandbox my-assistant --dry-run
+```
+
+Example: search the last 5 days of your Slack mentions, run model-based extraction, and update the sandbox memory file:
+
+```console
+$ SLACK_USER_TOKEN=xoxp-... \
+  nemoclaw slack-action-items --sandbox my-assistant
+```
+
+Example: restrict the search to a specific channel:
+
+```console
+$ SLACK_USER_TOKEN=xoxp-... \
+  nemoclaw slack-action-items --sandbox my-assistant --channel team-ops --days 7
+```
+
+Example: force the extractor to use a host-local vLLM server instead of the sandbox's default cloud route:
+
+```console
+$ scripts/start-slack-action-items-vllm.sh
+
+$ SLACK_USER_TOKEN=xoxp-... \
+  python3 -m nv_tools.commands.slack_action_items \
+    --sandbox xiaocars \
+    --context-messages 3 \
+    --local-qwen-vl-7b
+```
+
+The helper script starts `Qwen/Qwen2.5-VL-7B-Instruct` as `qwen-action-items`
+on `http://localhost:8001/v1` and uses GPU `0` by default. The shortcut expands
+to `--inference-provider vllm-local --inference-model qwen-action-items
+--inference-endpoint-url http://localhost:8001/v1`.
+
 ### `nemoclaw deploy`
 
 > **Warning:** The `nemoclaw deploy` command is deprecated.
@@ -559,6 +630,42 @@ Show the sandbox list and the status of host auxiliary services (for example clo
 
 ```console
 $ nemoclaw status
+```
+
+### `nemoclaw startup`
+
+Install or run host startup recovery for NemoClaw sandboxes.
+This command installs a host-level startup hook that restores the named OpenShell gateway, checks registered sandboxes, and re-establishes the dashboard forward on login or boot.
+
+On Linux, NemoClaw installs a user-level systemd service.
+On macOS, NemoClaw installs a LaunchAgent.
+This automation assumes your container runtime also starts automatically.
+
+```console
+$ nemoclaw startup enable [--with-services]
+$ nemoclaw startup disable
+$ nemoclaw startup status
+$ nemoclaw startup run [--with-services]
+```
+
+| Subcommand / Flag | Description |
+|------|-------------|
+| `enable` | Install and enable startup recovery for the current user |
+| `disable` | Disable and remove the installed startup recovery hook |
+| `status` | Show whether startup recovery is installed and enabled |
+| `run` | Run the startup recovery flow immediately without installing anything |
+| `--with-services` | Also start auxiliary services such as `cloudflared` after sandbox recovery |
+
+Example:
+
+```console
+$ nemoclaw startup enable
+```
+
+Example with auxiliary services:
+
+```console
+$ nemoclaw startup enable --with-services
 ```
 
 ### `nemoclaw setup-spark`
